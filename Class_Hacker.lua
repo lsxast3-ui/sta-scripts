@@ -362,6 +362,32 @@ RunService.Heartbeat:Connect(function()
     end
 end)
 
+-- ── EQUIP HELPERS ────────────────────────────────────────
+local function equipTool(tool)
+    local char = lp.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    hum:EquipTool(tool)
+end
+
+local function unequipAll()
+    local char = lp.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    hum:UnequipTools()
+end
+
+local function getCurrentWeapon()
+    local char = lp.Character
+    if not char then return nil end
+    for _, tool in pairs(char:GetChildren()) do
+        if tool:IsA("Tool") then return tool end
+    end
+    return nil
+end
+
 -- ── AUTO INFILTRATE ───────────────────────────────────────
 RunService.Heartbeat:Connect(function()
     if not STATE.autoInfiltrate then return end
@@ -374,32 +400,79 @@ RunService.Heartbeat:Connect(function()
     local target = getBestInfiltrateTarget()
     if not target then return end
 
-    -- Ambil remote dari Character (sudah dipegang) ATAU Backpack (di tas)
-    -- Tidak ada equip/unequip — FireServer langsung, tidak ada animasi apapun
-    local remote = nil
-    local char = lp.Character
-    if char then
-        local t = char:FindFirstChild("Infiltrate")
-        if t then remote = t:FindFirstChild("Use") end
+    -- Cari tool Infiltrate
+    local infiltrateTool = nil
+    local bp = lp:FindFirstChild("Backpack")
+    if bp then infiltrateTool = bp:FindFirstChild("Infiltrate") end
+    if not infiltrateTool then
+        local char = lp.Character
+        if char then infiltrateTool = char:FindFirstChild("Infiltrate") end
     end
-    if not remote then
-        local bp = lp:FindFirstChild("Backpack")
-        if bp then
-            local t = bp:FindFirstChild("Infiltrate")
-            if t then remote = t:FindFirstChild("Use") end
-        end
-    end
-    if not remote then return end
+    if not infiltrateTool then return end
 
     infiltrateRunning = true
     task.spawn(function()
-        local hum = target:FindFirstChildOfClass("Humanoid")
-        if hum and hum.Health > 0 and not hasVirus(target) then
-            local t = getNilInst(target.Name, "Model") or target
-            local ok = pcall(function() remote:FireServer(t) end)
-            if ok then lastInfiltrateUse = tick() end
+        -- Simpan senjata lama
+        local prevWeapon     = getCurrentWeapon()
+        local prevWeaponName = prevWeapon and prevWeapon.Name or nil
+
+        -- Equip Infiltrate
+        pcall(function() equipTool(infiltrateTool) end)
+
+        -- Tunggu tool benar-benar ter-equip
+        local equippedTool = nil
+        for _ = 1, 20 do
+            task.wait(0.05)
+            local char = lp.Character
+            if char then
+                local t = char:FindFirstChild("Infiltrate")
+                if t then equippedTool = t; break end
+            end
         end
-        task.wait(0.8)
+
+        if equippedTool then
+            -- Re-check target masih valid
+            local hum = target:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health > 0 and not hasVirus(target) and isValidEnemy(target) then
+                -- Simulasi klik kiri agar game trigger Infiltrate ke target di crosshair
+                local UIS = game:GetService("UserInputService")
+                local down = Instance.new("InputObject")
+                down.UserInputType  = Enum.UserInputType.MouseButton1
+                down.UserInputState = Enum.UserInputState.Begin
+                down.KeyCode        = Enum.KeyCode.Unknown
+                pcall(function() UIS:SimulateInput(down) end)
+
+                task.wait(0.15)
+
+                local up = Instance.new("InputObject")
+                up.UserInputType  = Enum.UserInputType.MouseButton1
+                up.UserInputState = Enum.UserInputState.End
+                up.KeyCode        = Enum.KeyCode.Unknown
+                pcall(function() UIS:SimulateInput(up) end)
+
+                lastInfiltrateUse = tick()
+            end
+        end
+
+        -- Tunggu animasi selesai
+        task.wait(0.6)
+
+        -- Kembali ke senjata lama atau unequip
+        if prevWeaponName then
+            local old = nil
+            local char = lp.Character
+            local backpack = lp:FindFirstChild("Backpack")
+            if backpack then old = backpack:FindFirstChild(prevWeaponName) end
+            if not old and char then old = char:FindFirstChild(prevWeaponName) end
+            if old then
+                pcall(function() equipTool(old) end)
+            else
+                pcall(function() unequipAll() end)
+            end
+        else
+            pcall(function() unequipAll() end)
+        end
+
         infiltrateRunning = false
     end)
 end)
