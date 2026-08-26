@@ -212,7 +212,11 @@ local function getBestTarget(virusPriority)
             if dist < dNor then dNor = dist; bestNor = z end
         end
     end
-    return virusPriority and (bestInf or bestNor) or bestNor
+    if virusPriority then
+        -- untuk auto shoot: HANYA kembalikan yang sudah terinfeksi
+        return bestInf
+    end
+    return bestNor
 end
 
 local function getBestInfiltrateTarget()
@@ -221,6 +225,12 @@ local function getBestInfiltrateTarget()
     local hrp = char:FindFirstChild("HumanoidRootPart")
     if not hrp then return nil end
     local myPos = hrp.Position
+
+    -- Arah kamera (crosshair) — zombie yang ada di depan arah pandang kamera
+    local camCF    = cam.CFrame
+    local camPos   = camCF.Position
+    local camForward = camCF.LookVector
+
     local chars = workspace:FindFirstChild("Characters")
     if not chars then return nil end
     local best, bd = nil, math.huge
@@ -229,9 +239,20 @@ local function getBestInfiltrateTarget()
         if hasVirus(z) then continue end
         local root = getZombieRoot(z)
         if not root then continue end
+
         local dist = (root.Position - myPos).Magnitude
         if dist > CFG.INFILTRATE_RANGE then continue end
+
+        -- Cek apakah zombie ada di depan arah crosshair kamera
+        -- dot product antara arah kamera dan arah ke zombie
+        -- nilai positif = di depan kamera
+        local toZombie = (root.Position - camPos).Unit
+        local dot = camForward:Dot(toZombie)
+        if dot < 0.3 then continue end  -- 0.3 = ~72 derajat FOV cone
+
+        -- LoS dari posisi karakter ke zombie
         if not hasLineOfSight(z) then continue end
+
         if dist < bd then bd = dist; best = z end
     end
     return best
@@ -353,20 +374,22 @@ RunService.Heartbeat:Connect(function()
     local target = getBestInfiltrateTarget()
     if not target then return end
 
-    local remote = getInfiltrateRemote()
-    if not remote then return end
-
+    -- Ambil remote dari Character (sudah dipegang) ATAU Backpack (di tas)
+    -- Tidak ada equip/unequip — FireServer langsung, tidak ada animasi apapun
+    local remote = nil
     local char = lp.Character
-    local prevCF = nil
     if char then
-        local hrp = char:FindFirstChild("HumanoidRootPart")
-        local zRoot = getZombieRoot(target)
-        if hrp and zRoot then
-            prevCF = hrp.CFrame
-            local lp2 = Vector3.new(zRoot.Position.X, hrp.Position.Y, zRoot.Position.Z)
-            pcall(function() hrp.CFrame = CFrame.lookAt(hrp.Position, lp2) end)
+        local t = char:FindFirstChild("Infiltrate")
+        if t then remote = t:FindFirstChild("Use") end
+    end
+    if not remote then
+        local bp = lp:FindFirstChild("Backpack")
+        if bp then
+            local t = bp:FindFirstChild("Infiltrate")
+            if t then remote = t:FindFirstChild("Use") end
         end
     end
+    if not remote then return end
 
     infiltrateRunning = true
     task.spawn(function()
@@ -377,18 +400,11 @@ RunService.Heartbeat:Connect(function()
             if ok then lastInfiltrateUse = tick() end
         end
         task.wait(0.8)
-        if prevCF then
-            local c = lp.Character
-            if c then
-                local hrp = c:FindFirstChild("HumanoidRootPart")
-                if hrp then pcall(function() hrp.CFrame = prevCF end) end
-            end
-        end
         infiltrateRunning = false
     end)
 end)
 
--- ── AUTO SHOOT ────────────────────────────────────────────
+-- ── AUTO SHOOT — hanya zombie yang SUDAH terinfeksi ───────
 RunService.Heartbeat:Connect(function()
     local weapon, _ = getWeaponShootRemote()
     if weapon ~= lastWeapon then
@@ -399,8 +415,11 @@ RunService.Heartbeat:Connect(function()
     local now = tick()
     if now - lastShot < CFG.SHOOT_RATE then return end
     lastShot = now
+    -- hanya cari zombie yang sudah kena virus (virusPriority=true, non-virus diabaikan)
     local target = getBestTarget(true)
     if not target then return end
+    -- double-check: skip kalau belum kena virus
+    if not hasVirus(target) then return end
     local hum = target:FindFirstChildOfClass("Humanoid")
     if not hum or hum.Health <= 0 then return end
     local _, remote = getWeaponShootRemote()
