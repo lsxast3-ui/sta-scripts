@@ -438,26 +438,20 @@ RunService.Heartbeat:Connect(function()
         end
 
         if equippedTool then
-            -- Re-check target masih valid
-            local hum = target:FindFirstChildOfClass("Humanoid")
-            if hum and hum.Health > 0 and not hasVirus(target) and isValidEnemy(target) then
-                -- Simulasi klik kiri agar game trigger Infiltrate ke target di crosshair
-                local UIS = game:GetService("UserInputService")
-                local down = Instance.new("InputObject")
-                down.UserInputType  = Enum.UserInputType.MouseButton1
-                down.UserInputState = Enum.UserInputState.Begin
-                down.KeyCode        = Enum.KeyCode.Unknown
-                pcall(function() UIS:SimulateInput(down) end)
+            -- Validasi ketat sebelum fire:
+            -- 1. Remote Use tersedia di tool yang sudah di-equip
+            -- 2. Target masih hidup, belum virus, valid enemy
+            local remote = equippedTool:FindFirstChild("Use")
+            local hum    = target:FindFirstChildOfClass("Humanoid")
 
-                task.wait(0.15)
-
-                local up = Instance.new("InputObject")
-                up.UserInputType  = Enum.UserInputType.MouseButton1
-                up.UserInputState = Enum.UserInputState.End
-                up.KeyCode        = Enum.KeyCode.Unknown
-                pcall(function() UIS:SimulateInput(up) end)
-
-                lastInfiltrateUse = tick()
+            if remote
+            and hum and hum.Health > 0
+            and not hasVirus(target)
+            and isValidEnemy(target) then
+                -- Semua valid — FireServer dengan target yang sudah dikonfirmasi
+                local nilTarget = getNilInst(target.Name, "Model") or target
+                local ok = pcall(function() remote:FireServer(nilTarget) end)
+                if ok then lastInfiltrateUse = tick() end
             end
         end
 
