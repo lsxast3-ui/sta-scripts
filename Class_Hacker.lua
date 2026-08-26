@@ -292,6 +292,16 @@ local function getNearbyList()
 end
 
 -- ── EQUIP HELPERS ──────────────────────────────────────────
+local function getInfiltrateCooldown()
+    local function from(parent)
+        if not parent then return nil end
+        local t = parent:FindFirstChild("Infiltrate")
+        if not t then return nil end
+        return t:GetAttribute("Cooldown")
+    end
+    return from(lp:FindFirstChild("Backpack")) or from(lp.Character)
+end
+
 local function equipTool(tool)
     local char = lp.Character
     if not char then return end
@@ -373,8 +383,9 @@ RunService.Heartbeat:Connect(function()
     if now - lastInfiltrate < 0.5 then return end
     lastInfiltrate = now
 
-    -- CD belum habis
-    if now - lastInfiltrateUse < INFILTRATE_CD then
+    -- CD belum habis — baca dari attribute game langsung
+    local cd = getInfiltrateCooldown()
+    if cd and cd > 0 then
         if infiltrateEquipped and not infiltrateRunning then
             unhookInfiltrate()
             swapBack(prevWeaponNameINF)
@@ -391,6 +402,10 @@ RunService.Heartbeat:Connect(function()
 
     -- Wajib ada target valid sebelum equip
     if not getBestInfiltrateTarget() then return end
+
+    -- Jangan equip kalau ada zombie virus yang bisa ditembak (LoS clear)
+    -- Biarkan auto shoot kerja dulu — equip hanya kalau tidak ada ancaman aktif
+    if getBestTarget() then return end
 
     -- Cari tool Infiltrate
     local infiltrateTool = nil
@@ -784,19 +799,19 @@ lo=lo+1; sld("Max Range",50,800,CFG.MAX_RANGE,lo,function(v) CFG.MAX_RANGE=v end
 lo=lo+1; sld("Infiltrate Range",10,200,CFG.INFILTRATE_RANGE,lo,function(v) CFG.INFILTRATE_RANGE=v end)
 lo=lo+1; sld("Shoot Rate (ms)",30,300,math.floor(CFG.SHOOT_RATE*1000),lo,function(v) CFG.SHOOT_RATE=v/1000 end)
 
--- ── CD UPDATER realtime ────────────────────────────────────
+-- ── CD UPDATER realtime — baca dari attribute game langsung ──
 RunService.RenderStepped:Connect(function()
-    local cdLeft = INFILTRATE_CD - (tick() - lastInfiltrateUse)
-    if cdLeft <= 0 then
-        cdLbl.Text       = "READY"
-        cdLbl.TextColor3 = C.CD_READY
-        cdFill.Size      = UDim2.new(1,0,1,0)
+    local cd = getInfiltrateCooldown()
+    if not cd or cd <= 0 then
+        cdLbl.Text              = "READY"
+        cdLbl.TextColor3        = C.CD_READY
+        cdFill.Size             = UDim2.new(1, 0, 1, 0)
         cdFill.BackgroundColor3 = C.CD_READY
     else
-        cdLbl.Text       = string.format("%.1fs", cdLeft)
-        cdLbl.TextColor3 = C.CD_WAIT
-        local ratio = math.clamp(cdLeft / INFILTRATE_CD, 0, 1)
-        cdFill.Size = UDim2.new(ratio, 0, 1, 0)
+        cdLbl.Text              = string.format("%ds", math.ceil(cd))
+        cdLbl.TextColor3        = C.CD_WAIT
+        local ratio = math.clamp(cd / INFILTRATE_CD, 0, 1)
+        cdFill.Size             = UDim2.new(ratio, 0, 1, 0)
         cdFill.BackgroundColor3 = C.CD_WAIT
     end
 end)
