@@ -227,8 +227,10 @@ local function getBestInfiltrateTarget()
     local myPos = hrp.Position
 
     -- Arah kamera (crosshair) — zombie yang ada di depan arah pandang kamera
-    local camCF    = cam.CFrame
-    local camPos   = camCF.Position
+    local currentCam = workspace.CurrentCamera
+    if not currentCam then return nil end
+    local camCF      = currentCam.CFrame
+    local camPos     = camCF.Position
     local camForward = camCF.LookVector
 
     local chars = workspace:FindFirstChild("Characters")
