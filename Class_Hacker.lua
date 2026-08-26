@@ -251,6 +251,11 @@ local function getBestInfiltrateTarget()
         local dist = (root.Position - myPos).Magnitude
         if dist > CFG.INFILTRATE_RANGE then continue end
 
+        -- Filter 180 derajat depan karakter
+        -- LookVector karakter dot arah ke zombie > 0 = di depan
+        local toZombie = (root.Position - myPos).Unit
+        if hrp.CFrame.LookVector:Dot(toZombie) <= 0 then continue end
+
         -- Filter arah kamera hanya jika berhasil didapat
         if camForward and camPos then
             local toZombie = (root.Position - camPos).Unit
