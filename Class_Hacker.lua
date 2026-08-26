@@ -226,12 +226,18 @@ local function getBestInfiltrateTarget()
     if not hrp then return nil end
     local myPos = hrp.Position
 
-    -- Arah kamera (crosshair) — zombie yang ada di depan arah pandang kamera
-    local currentCam = workspace.CurrentCamera
-    if not currentCam then return nil end
-    local camCF      = currentCam.CFrame
-    local camPos     = camCF.Position
-    local camForward = camCF.LookVector
+    -- Filter berdasarkan arah kamera jika tersedia
+    local camCF      = nil
+    local camPos     = nil
+    local camForward = nil
+    local ok = pcall(function()
+        local c = game:GetService("Workspace").CurrentCamera
+        if c then
+            camCF      = c.CFrame
+            camPos     = camCF.Position
+            camForward = camCF.LookVector
+        end
+    end)
 
     local chars = workspace:FindFirstChild("Characters")
     if not chars then return nil end
@@ -245,14 +251,13 @@ local function getBestInfiltrateTarget()
         local dist = (root.Position - myPos).Magnitude
         if dist > CFG.INFILTRATE_RANGE then continue end
 
-        -- Cek apakah zombie ada di depan arah crosshair kamera
-        -- dot product antara arah kamera dan arah ke zombie
-        -- nilai positif = di depan kamera
-        local toZombie = (root.Position - camPos).Unit
-        local dot = camForward:Dot(toZombie)
-        if dot < 0.3 then continue end  -- 0.3 = ~72 derajat FOV cone
+        -- Filter arah kamera hanya jika berhasil didapat
+        if camForward and camPos then
+            local toZombie = (root.Position - camPos).Unit
+            local dot = camForward:Dot(toZombie)
+            if dot < 0.3 then continue end
+        end
 
-        -- LoS dari posisi karakter ke zombie
         if not hasLineOfSight(z) then continue end
 
         if dist < bd then bd = dist; best = z end
