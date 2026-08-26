@@ -492,6 +492,11 @@ RunService.Heartbeat:Connect(function()
 
     if alreadyHeld and infiltrateEquipped then return end  -- sudah di tangan, tunggu player pakai
 
+    -- WAJIB ada target valid dulu sebelum equip
+    -- Kalau tidak ada zombie dalam range, jangan equip
+    local target = getBestInfiltrateTarget()
+    if not target then return end
+
     -- Cari tool Infiltrate
     local infiltrateTool = nil
     local bp = lp:FindFirstChild("Backpack")
