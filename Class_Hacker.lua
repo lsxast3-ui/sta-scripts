@@ -7,41 +7,38 @@ local UserInputService = game:GetService("UserInputService")
 local CoreGui          = game:GetService("CoreGui")
 local TweenService     = game:GetService("TweenService")
 
-local lp  = Players.LocalPlayer
+local lp = Players.LocalPlayer
 
 local CFG = {
     MAX_RANGE        = 400,
     INFILTRATE_RANGE = 100,
     SHOOT_RATE       = 0.09,
     TARGET_UPD_RATE  = 0.5,
-    HEAD_EXP_SIZE    = 5,
-    HEAD_EXP_ALPHA   = 0.65,
 }
 
 local STATE = {
-    autoInfiltrate   = false,
-    autoShoot        = false,
-    autoUpdateTarget = false,
-    headExpander     = false,
+    autoInfiltrate = false,
+    autoShoot      = false,
 }
 
-local lastShot        = 0
-local lastTargetUpd   = 0
-local lastInfiltrate  = 0
+local lastShot          = 0
+local lastTargetUpd     = 0
+local lastInfiltrate    = 0
 local lastInfiltrateUse = 0
 local infiltrateRunning = false
-local shotCounter     = 1
-local lastWeapon      = nil
-local expandedHeads   = {}
-local INFILTRATE_CD   = 15
+local infiltrateEquipped = false
+local infiltrateHook    = nil
+local prevWeaponNameINF = nil
+local shotCounter       = 1
+local lastWeapon        = nil
+local INFILTRATE_CD     = 15
 
--- ── WHITELIST ─────────────────────────────────────────────
+-- ── WHITELIST ──────────────────────────────────────────────
 local SURVIVOR_NAMES = {
     Survivor=true, Fighter=true, Medic=true, Soldier=true,
     Scavenger=true, Assassin=true, Policeman=true,
     ["Necromancer"]=true, Merchant=true, Trader=true, Vendor=true, NPC=true,
 }
-
 local ENEMY_NAMES = {
     Zombie=true, Crawler=true, Runner=true, Bloater=true, Spitter=true,
     Riot=true, Phaser=true, Hazmat=true, Screamer=true, Muscle=true,
@@ -78,13 +75,13 @@ local function isAllyZombie(model)
 end
 
 local function isValidEnemy(model)
-    if not ENEMY_NAMES[model.Name]   then return false end
-    if SURVIVOR_NAMES[model.Name]    then return false end
-    if isAllyZombie(model)           then return false end
+    if not ENEMY_NAMES[model.Name]  then return false end
+    if SURVIVOR_NAMES[model.Name]   then return false end
+    if isAllyZombie(model)          then return false end
     return true
 end
 
--- ── UTILITY ───────────────────────────────────────────────
+-- ── UTILITY ────────────────────────────────────────────────
 local function getNilPart(name, zombie)
     local d = zombie:FindFirstChild(name, true)
     if d then return d end
@@ -156,7 +153,7 @@ local function getZombieRoot(zombie)
         or zombie:FindFirstChild("UpperTorso")
 end
 
--- ── REMOTES ───────────────────────────────────────────────
+-- ── REMOTES ────────────────────────────────────────────────
 local function findToolRemote(toolName, remoteName)
     local function s(parent)
         if not parent then return nil end
@@ -166,7 +163,6 @@ local function findToolRemote(toolName, remoteName)
     return s(lp:FindFirstChild("Backpack")) or s(lp.Character)
 end
 
-local function getInfiltrateRemote()     return findToolRemote("Infiltrate",      "Use") end
 local function getSystemOverrideRemote() return findToolRemote("System Override", "Use") end
 
 local function getAutoTargetRemote()
@@ -188,8 +184,9 @@ local function getWeaponShootRemote()
     return nil, nil
 end
 
--- ── TARGET SELECTION ─────────────────────────────────────
-local function getBestTarget(virusPriority)
+-- ── TARGET SELECTION ───────────────────────────────────────
+local function getBestTarget()
+    -- hanya zombie yang sudah terinfeksi virus
     local char = lp.Character
     if not char then return nil end
     local hrp = char:FindFirstChild("HumanoidRootPart")
@@ -197,26 +194,18 @@ local function getBestTarget(virusPriority)
     local myPos = hrp.Position
     local chars = workspace:FindFirstChild("Characters")
     if not chars then return nil end
-    local bestInf, bestNor
-    local dInf, dNor = math.huge, math.huge
+    local best, bd = nil, math.huge
     for _, z in pairs(chars:GetChildren()) do
         if not isEnemy(z) then continue end
+        if not hasVirus(z) then continue end
         local root = getZombieRoot(z)
         if not root then continue end
         local dist = (root.Position - myPos).Magnitude
         if dist > CFG.MAX_RANGE then continue end
         if not hasLineOfSight(z) then continue end
-        if hasVirus(z) then
-            if dist < dInf then dInf = dist; bestInf = z end
-        else
-            if dist < dNor then dNor = dist; bestNor = z end
-        end
+        if dist < bd then bd = dist; best = z end
     end
-    if virusPriority then
-        -- untuk auto shoot: HANYA kembalikan yang sudah terinfeksi
-        return bestInf
-    end
-    return bestNor
+    return best
 end
 
 local function getBestInfiltrateTarget()
@@ -226,17 +215,11 @@ local function getBestInfiltrateTarget()
     if not hrp then return nil end
     local myPos = hrp.Position
 
-    -- Filter berdasarkan arah kamera jika tersedia
-    local camCF      = nil
-    local camPos     = nil
-    local camForward = nil
-    local ok = pcall(function()
-        local c = game:GetService("Workspace").CurrentCamera
-        if c then
-            camCF      = c.CFrame
-            camPos     = camCF.Position
-            camForward = camCF.LookVector
-        end
+    -- arah kamera
+    local camForward, camPos = nil, nil
+    pcall(function()
+        local c = workspace.CurrentCamera
+        if c then camForward = c.CFrame.LookVector; camPos = c.CFrame.Position end
     end)
 
     local chars = workspace:FindFirstChild("Characters")
@@ -244,33 +227,25 @@ local function getBestInfiltrateTarget()
     local best, bd = nil, math.huge
     for _, z in pairs(chars:GetChildren()) do
         if not isEnemy(z) then continue end
-        if hasVirus(z) then continue end
+        if hasVirus(z)    then continue end
         local root = getZombieRoot(z)
         if not root then continue end
-
         local dist = (root.Position - myPos).Magnitude
         if dist > CFG.INFILTRATE_RANGE then continue end
-
-        -- Filter 180 derajat depan karakter
-        -- LookVector karakter dot arah ke zombie > 0 = di depan
-        local toZombie = (root.Position - myPos).Unit
-        if hrp.CFrame.LookVector:Dot(toZombie) <= 0 then continue end
-
-        -- Filter arah kamera hanya jika berhasil didapat
+        -- 180 derajat depan karakter
+        local toZ = (root.Position - myPos).Unit
+        if hrp.CFrame.LookVector:Dot(toZ) <= 0 then continue end
+        -- filter kamera jika tersedia
         if camForward and camPos then
-            local toZombie = (root.Position - camPos).Unit
-            local dot = camForward:Dot(toZombie)
-            if dot < 0.3 then continue end
+            if camForward:Dot((root.Position - camPos).Unit) < 0.3 then continue end
         end
-
         if not hasLineOfSight(z) then continue end
-
         if dist < bd then bd = dist; best = z end
     end
     return best
 end
 
--- ── SHOOT ARGS ────────────────────────────────────────────
+-- ── SHOOT ARGS ─────────────────────────────────────────────
 local function buildShootArgs(zombie, counter)
     local char = lp.Character
     if not char then return nil end
@@ -278,9 +253,9 @@ local function buildShootArgs(zombie, counter)
     if not hrp then return nil end
     local hitPart = getNilPart("Head", zombie)
     if not hitPart then return nil end
-    local origin = hrp.Position
-    local hitPos = hitPart.Position
-    local root   = getZombieRoot(zombie)
+    local origin    = hrp.Position
+    local hitPos    = hitPart.Position
+    local root      = getZombieRoot(zombie)
     local targetPos = root and root.Position or hitPos
     return {
         [1] = origin,
@@ -293,15 +268,14 @@ local function buildShootArgs(zombie, counter)
     }
 end
 
--- ── NEARBY LIST (UpdateNearbyTargets) ─────────────────────
+-- ── NEARBY LIST ─────────────────────────────────────────────
 local function getNearbyList()
     local char = lp.Character
     if not char then return {} end
     local hrp = char:FindFirstChild("HumanoidRootPart")
     if not hrp then return {} end
     local myPos = hrp.Position
-    local all = {}
-    local chars = workspace:FindFirstChild("Characters")
+    local all, chars = {}, workspace:FindFirstChild("Characters")
     if chars then
         for _, z in pairs(chars:GetChildren()) do
             if isEnemy(z) then table.insert(all, z) end
@@ -309,72 +283,15 @@ local function getNearbyList()
     end
     table.sort(all, function(a, b)
         local ra = getZombieRoot(a); local rb = getZombieRoot(b)
-        local da = ra and (ra.Position-myPos).Magnitude or math.huge
-        local db = rb and (rb.Position-myPos).Magnitude or math.huge
-        return da < db
+        return (ra and (ra.Position-myPos).Magnitude or math.huge)
+             < (rb and (rb.Position-myPos).Magnitude or math.huge)
     end)
     local r = {}
     for i = 1, math.min(12, #all) do r[i] = all[i] end
     return r
 end
 
--- ── HEAD EXPANDER ─────────────────────────────────────────
-local function expandHead(zombie)
-    local head = zombie:FindFirstChild("Head", true)
-    if not head or not head:IsA("BasePart") or expandedHeads[head] then return end
-    expandedHeads[head] = { Size=head.Size, Transparency=head.Transparency }
-    head.Size = Vector3.new(CFG.HEAD_EXP_SIZE, CFG.HEAD_EXP_SIZE, CFG.HEAD_EXP_SIZE)
-    head.Transparency = CFG.HEAD_EXP_ALPHA
-    head.CanCollide   = false
-end
-
-local function restoreHead(head)
-    if not expandedHeads[head] then return end
-    if head and head.Parent then
-        head.Size         = expandedHeads[head].Size
-        head.Transparency = expandedHeads[head].Transparency
-    end
-    expandedHeads[head] = nil
-end
-
-local function restoreAllHeads()
-    for head in pairs(expandedHeads) do restoreHead(head) end
-    expandedHeads = {}
-end
-
-local function updateHeadSizes()
-    for head in pairs(expandedHeads) do
-        if head and head.Parent then
-            head.Size = Vector3.new(CFG.HEAD_EXP_SIZE, CFG.HEAD_EXP_SIZE, CFG.HEAD_EXP_SIZE)
-        end
-    end
-end
-
-RunService.Heartbeat:Connect(function()
-    if not STATE.headExpander then
-        if next(expandedHeads) then restoreAllHeads() end
-        return
-    end
-    local chars = workspace:FindFirstChild("Characters")
-    if not chars then return end
-    for _, z in pairs(chars:GetChildren()) do
-        local isP = false
-        for _, p in pairs(Players:GetPlayers()) do
-            if p.Character == z then isP = true; break end
-        end
-        if not isP then
-            local head = z:FindFirstChild("Head", true)
-            if head and head:IsA("BasePart") and not expandedHeads[head] then
-                expandHead(z)
-            end
-        end
-    end
-    for head in pairs(expandedHeads) do
-        if not head or not head.Parent then expandedHeads[head] = nil end
-    end
-end)
-
--- ── EQUIP HELPERS ────────────────────────────────────────
+-- ── EQUIP HELPERS ──────────────────────────────────────────
 local function equipTool(tool)
     local char = lp.Character
     if not char then return end
@@ -409,9 +326,9 @@ local function getOldTool(name)
     return nil
 end
 
-local function swapBack(prevWeaponName)
-    if prevWeaponName then
-        local old = getOldTool(prevWeaponName)
+local function swapBack(name)
+    if name then
+        local old = getOldTool(name)
         if old then pcall(function() equipTool(old) end)
         else        pcall(function() unequipAll()   end) end
     else
@@ -419,18 +336,7 @@ local function swapBack(prevWeaponName)
     end
 end
 
--- ── AUTO INFILTRATE ───────────────────────────────────────
--- Logika:
--- 1. Jika CD habis → auto equip Infiltrate ke tangan player
--- 2. Player pakai manual (klik kiri) → skill jalan
--- 3. Deteksi via hookfunction pada FireServer Infiltrate.Use
---    → saat player fire, script otomatis swap kembali ke senjata lama
--- ─────────────────────────────────────────────────────────
-
-local infiltrateHook    = nil  -- menyimpan hook agar bisa di-unhook
-local prevWeaponNameINF = nil  -- senjata sebelum equip Infiltrate
-local infiltrateEquipped = false
-
+-- ── AUTO INFILTRATE ────────────────────────────────────────
 local function unhookInfiltrate()
     if infiltrateHook then
         pcall(function() infiltrateHook() end)
@@ -439,29 +345,22 @@ local function unhookInfiltrate()
 end
 
 local function hookInfiltrateUse(remote)
-    -- Hook FireServer pada remote Infiltrate.Use
-    -- Saat player fire (pakai skill), deteksi dan swap balik
-    local originalFireServer = remote.FireServer
-    infiltrateHook = hookfunction(originalFireServer, function(self, ...)
-        -- Panggil original dulu agar skill tetap jalan
-        local result = {originalFireServer(self, ...)}
-        -- Catat waktu penggunaan
+    local orig = remote.FireServer
+    infiltrateHook = hookfunction(orig, function(self, ...)
+        local res = { orig(self, ...) }
         lastInfiltrateUse = tick()
-        infiltrateRunning = false
-        -- Unhook agar tidak trigger berkali-kali
+        infiltrateRunning  = false
         unhookInfiltrate()
-        -- Swap kembali ke senjata lama setelah jeda singkat
         task.delay(0.5, function()
             swapBack(prevWeaponNameINF)
             infiltrateEquipped = false
         end)
-        return table.unpack(result)
+        return table.unpack(res)
     end)
 end
 
 RunService.Heartbeat:Connect(function()
     if not STATE.autoInfiltrate then
-        -- Kalau toggle dimatikan, unhook dan swap balik
         if infiltrateEquipped then
             unhookInfiltrate()
             swapBack(prevWeaponNameINF)
@@ -474,9 +373,8 @@ RunService.Heartbeat:Connect(function()
     if now - lastInfiltrate < 0.5 then return end
     lastInfiltrate = now
 
-    -- CD belum habis — pastikan tidak auto equip
+    -- CD belum habis
     if now - lastInfiltrateUse < INFILTRATE_CD then
-        -- Kalau Infiltrate masih di tangan dan seharusnya sudah swap balik
         if infiltrateEquipped and not infiltrateRunning then
             unhookInfiltrate()
             swapBack(prevWeaponNameINF)
@@ -485,40 +383,29 @@ RunService.Heartbeat:Connect(function()
         return
     end
 
-    -- CD habis — cek apakah Infiltrate sudah di tangan
     local char = lp.Character
     if not char then return end
-    local alreadyHeld = char:FindFirstChild("Infiltrate") ~= nil
 
-    if alreadyHeld and infiltrateEquipped then return end  -- sudah di tangan, tunggu player pakai
+    -- Sudah di tangan dan sudah setup hook → tunggu player pakai
+    if infiltrateEquipped then return end
 
-    -- WAJIB ada target valid dulu sebelum equip
-    -- Kalau tidak ada zombie dalam range, jangan equip
-    local target = getBestInfiltrateTarget()
-    if not target then return end
+    -- Wajib ada target valid sebelum equip
+    if not getBestInfiltrateTarget() then return end
 
     -- Cari tool Infiltrate
     local infiltrateTool = nil
     local bp = lp:FindFirstChild("Backpack")
     if bp then infiltrateTool = bp:FindFirstChild("Infiltrate") end
-    if not infiltrateTool and not alreadyHeld then return end
-    if alreadyHeld then
-        local t = char:FindFirstChild("Infiltrate")
-        if t then infiltrateTool = t end
+    if not infiltrateTool then
+        infiltrateTool = char:FindFirstChild("Infiltrate")
     end
     if not infiltrateTool then return end
 
-    -- Simpan senjata yang sedang dipegang (kalau bukan Infiltrate sendiri)
     local current = getCurrentWeapon()
     if current and current.Name == "Infiltrate" then
-        -- Sudah pegang Infiltrate, setup hook saja jika belum
-        if not infiltrateEquipped then
-            infiltrateEquipped = true
-            local remote = infiltrateTool:FindFirstChild("Use")
-            if remote and not infiltrateHook then
-                hookInfiltrateUse(remote)
-            end
-        end
+        infiltrateEquipped = true
+        local remote = infiltrateTool:FindFirstChild("Use")
+        if remote and not infiltrateHook then hookInfiltrateUse(remote) end
         return
     end
 
@@ -527,10 +414,7 @@ RunService.Heartbeat:Connect(function()
     infiltrateRunning  = true
 
     task.spawn(function()
-        -- Equip Infiltrate
         pcall(function() equipTool(infiltrateTool) end)
-
-        -- Tunggu ter-equip lalu pasang hook
         local equippedTool = nil
         for _ = 1, 20 do
             task.wait(0.05)
@@ -540,15 +424,11 @@ RunService.Heartbeat:Connect(function()
                 if t then equippedTool = t; break end
             end
         end
-
         if equippedTool then
             local remote = equippedTool:FindFirstChild("Use")
-            if remote then
-                hookInfiltrateUse(remote)
-            end
+            if remote then hookInfiltrateUse(remote) end
         end
-
-        -- Kalau player tidak pakai dalam 8 detik, swap balik otomatis
+        -- Safety: kalau 8 detik tidak dipakai, swap balik
         task.delay(8, function()
             if infiltrateEquipped then
                 unhookInfiltrate()
@@ -560,22 +440,16 @@ RunService.Heartbeat:Connect(function()
     end)
 end)
 
--- ── AUTO SHOOT — hanya zombie yang SUDAH terinfeksi ───────
+-- ── AUTO SHOOT ─────────────────────────────────────────────
 RunService.Heartbeat:Connect(function()
     local weapon, _ = getWeaponShootRemote()
-    if weapon ~= lastWeapon then
-        lastWeapon  = weapon
-        shotCounter = 1
-    end
+    if weapon ~= lastWeapon then lastWeapon = weapon; shotCounter = 1 end
     if not STATE.autoShoot then return end
     local now = tick()
     if now - lastShot < CFG.SHOOT_RATE then return end
     lastShot = now
-    -- hanya cari zombie yang sudah kena virus (virusPriority=true, non-virus diabaikan)
-    local target = getBestTarget(true)
+    local target = getBestTarget()
     if not target then return end
-    -- double-check: skip kalau belum kena virus
-    if not hasVirus(target) then return end
     local hum = target:FindFirstChildOfClass("Humanoid")
     if not hum or hum.Health <= 0 then return end
     local _, remote = getWeaponShootRemote()
@@ -586,9 +460,9 @@ RunService.Heartbeat:Connect(function()
     if ok then shotCounter = shotCounter + 1 end
 end)
 
--- ── AUTO UPDATE TARGETS ───────────────────────────────────
+-- ── AUTO UPDATE TARGETS (aktif otomatis saat autoShoot ON) ─
 RunService.Heartbeat:Connect(function()
-    if not STATE.autoUpdateTarget then return end
+    if not STATE.autoShoot then return end
     local now = tick()
     if now - lastTargetUpd < CFG.TARGET_UPD_RATE then return end
     lastTargetUpd = now
@@ -603,7 +477,6 @@ end)
 
 lp.CharacterAdded:Connect(function()
     shotCounter = 1; lastWeapon = nil
-    restoreAllHeads()
 end)
 
 -- ═══════════════════════════════════════════════════════════
@@ -633,13 +506,15 @@ local C = {
     SL_F     = Color3.fromRGB( 40,200, 60),
     OVR      = Color3.fromRGB(200, 30, 30),
     OVR2     = Color3.fromRGB(255, 60, 60),
+    CD_READY = Color3.fromRGB( 50,220, 70),
+    CD_WAIT  = Color3.fromRGB(220,150, 30),
 }
 local PW=230; local HH=30; local RH=28; local PAD=8
 local CR=UDim.new(0,8); local CS=UDim.new(0,5)
 
 local panel = Instance.new("Frame")
-panel.Name="Panel"; panel.Size=UDim2.new(0,PW,0,440)
-panel.Position=UDim2.new(1,-(PW+16),0.5,-220)
+panel.Name="Panel"; panel.Size=UDim2.new(0,PW,0,360)
+panel.Position=UDim2.new(1,-(PW+16),0.5,-180)
 panel.BackgroundColor3=C.BG; panel.BorderSizePixel=0
 panel.Active=true; panel.Draggable=true; panel.ClipsDescendants=true
 panel.Parent=ScreenGui
@@ -668,7 +543,6 @@ hg.Color=ColorSequence.new({
     ColorSequenceKeypoint.new(1,Color3.fromRGB(5,20,5)),
 })
 
--- Logo LSxAS
 local logoLbl=Instance.new("TextLabel",header)
 logoLbl.Size=UDim2.new(0,50,0,20); logoLbl.Position=UDim2.new(0,6,0.5,-10)
 logoLbl.BackgroundColor3=C.ACCENT; logoLbl.Text="LSxAS"
@@ -700,7 +574,7 @@ local sP=Instance.new("UIPadding",scroll)
 sP.PaddingTop=UDim.new(0,6); sP.PaddingBottom=UDim.new(0,8)
 sP.PaddingLeft=UDim.new(0,PAD); sP.PaddingRight=UDim.new(0,PAD)
 
-local FH=440; local isMin=false
+local FH=360; local isMin=false
 minBtn.MouseButton1Click:Connect(function()
     isMin=not isMin
     TweenService:Create(panel,TweenInfo.new(0.2,Enum.EasingStyle.Quad),
@@ -708,7 +582,7 @@ minBtn.MouseButton1Click:Connect(function()
     minBtn.Text=isMin and "+" or "−"; scroll.Visible=not isMin
 end)
 
--- helpers
+-- helpers UI
 local function sec(text,order)
     local l=Instance.new("TextLabel",scroll)
     l.Size=UDim2.new(1,0,0,16); l.BackgroundTransparency=1
@@ -781,38 +655,30 @@ local function sld(label,minV,maxV,initV,order,fn)
     c.Size=UDim2.new(1,0,0,38); c.BackgroundColor3=C.ROW
     c.BorderSizePixel=0; c.LayoutOrder=order
     Instance.new("UICorner",c).CornerRadius=CS
-
     local kl=Instance.new("TextLabel",c)
     kl.Size=UDim2.new(0,110,0,16); kl.Position=UDim2.new(0,8,0,4)
-    kl.BackgroundTransparency=1; kl.Text=label
-    kl.TextColor3=C.TEXT_DIM; kl.TextSize=9; kl.Font=Enum.Font.Gotham
-    kl.TextXAlignment=Enum.TextXAlignment.Left
-
+    kl.BackgroundTransparency=1; kl.Text=label; kl.TextColor3=C.TEXT_DIM
+    kl.TextSize=9; kl.Font=Enum.Font.Gotham; kl.TextXAlignment=Enum.TextXAlignment.Left
     local vl=Instance.new("TextLabel",c)
     vl.Size=UDim2.new(0,36,0,16); vl.Position=UDim2.new(1,-40,0,4)
     vl.BackgroundTransparency=1; vl.Text=tostring(initV)
     vl.TextColor3=C.ACCENT; vl.TextSize=10; vl.Font=Enum.Font.GothamBold
     vl.TextXAlignment=Enum.TextXAlignment.Right
-
     local track=Instance.new("Frame",c)
     track.Size=UDim2.new(1,-18,0,4); track.Position=UDim2.new(0,9,0,28)
     track.BackgroundColor3=C.SL_B; track.BorderSizePixel=0
     Instance.new("UICorner",track).CornerRadius=UDim.new(1,0)
-
     local fill=Instance.new("Frame",track)
     fill.Size=UDim2.new((initV-minV)/(maxV-minV),0,1,0)
     fill.BackgroundColor3=C.SL_F; fill.BorderSizePixel=0
     Instance.new("UICorner",fill).CornerRadius=UDim.new(1,0)
-
     local knob=Instance.new("Frame",track)
     knob.Size=UDim2.new(0,12,0,12); knob.AnchorPoint=Vector2.new(0.5,0.5)
     knob.Position=UDim2.new((initV-minV)/(maxV-minV),0,0.5,0)
     knob.BackgroundColor3=C.TEXT; knob.BorderSizePixel=0
     Instance.new("UICorner",knob).CornerRadius=UDim.new(1,0)
-
     local kb=Instance.new("TextButton",knob)
     kb.Size=UDim2.new(1,0,1,0); kb.BackgroundTransparency=1; kb.Text=""; kb.ZIndex=4
-
     local drag=false; local cur=initV
     kb.MouseButton1Down:Connect(function() drag=true end)
     track.InputBegan:Connect(function(i)
@@ -846,109 +712,92 @@ local function bigBtn(text,col,col2,order)
     return btn
 end
 
-local function statusBar(order)
+-- ── Infiltrate CD Panel (realtime) ─────────────────────────
+local function makeCDPanel(order)
     local bar=Instance.new("Frame",scroll)
-    bar.Size=UDim2.new(1,0,0,46); bar.BackgroundColor3=C.ROW
+    bar.Size=UDim2.new(1,0,0,50); bar.BackgroundColor3=C.ROW
     bar.BorderSizePixel=0; bar.LayoutOrder=order
     Instance.new("UICorner",bar).CornerRadius=CS
-    local lbl=Instance.new("TextLabel",bar)
-    lbl.Size=UDim2.new(1,-12,1,-8); lbl.Position=UDim2.new(0,6,0,4)
-    lbl.BackgroundTransparency=1; lbl.Text="..."
-    lbl.TextColor3=C.TEXT; lbl.TextSize=9; lbl.Font=Enum.Font.Gotham
-    lbl.TextXAlignment=Enum.TextXAlignment.Left; lbl.TextYAlignment=Enum.TextYAlignment.Top
-    lbl.TextWrapped=true; return lbl
+
+    local title=Instance.new("TextLabel",bar)
+    title.Size=UDim2.new(1,-12,0,16); title.Position=UDim2.new(0,8,0,4)
+    title.BackgroundTransparency=1; title.Text="INFILTRATE COOLDOWN"
+    title.TextColor3=C.TEXT_DIM; title.TextSize=9; title.Font=Enum.Font.GothamBold
+    title.TextXAlignment=Enum.TextXAlignment.Left
+
+    -- teks CD
+    local cdLbl=Instance.new("TextLabel",bar)
+    cdLbl.Size=UDim2.new(0,80,0,20); cdLbl.Position=UDim2.new(1,-88,0,4)
+    cdLbl.BackgroundTransparency=1; cdLbl.Text="READY"
+    cdLbl.TextColor3=C.CD_READY; cdLbl.TextSize=11; cdLbl.Font=Enum.Font.GothamBold
+    cdLbl.TextXAlignment=Enum.TextXAlignment.Right
+
+    -- track CD bar
+    local track=Instance.new("Frame",bar)
+    track.Size=UDim2.new(1,-16,0,6); track.Position=UDim2.new(0,8,0,28)
+    track.BackgroundColor3=C.SL_B; track.BorderSizePixel=0
+    Instance.new("UICorner",track).CornerRadius=UDim.new(1,0)
+
+    local fill=Instance.new("Frame",track)
+    fill.Size=UDim2.new(1,0,1,0)
+    fill.BackgroundColor3=C.CD_READY; fill.BorderSizePixel=0
+    Instance.new("UICorner",fill).CornerRadius=UDim.new(1,0)
+
+    return cdLbl, fill
 end
 
--- ── BUILD UI ─────────────────────────────────────────────
+-- ── BUILD UI ───────────────────────────────────────────────
 local lo=0
 
-lo=lo+1; sec("── STATUS ─────────────────────────",lo)
-lo=lo+1; local statusLbl=statusBar(lo)
-lo=lo+1; div(lo)
-
-lo=lo+1; sec("── COMBAT ─────────────────────────",lo)
-
+lo=lo+1; sec("── INFILTRATE ──────────────────────",lo)
+lo=lo+1; local cdLbl, cdFill = makeCDPanel(lo)
 lo=lo+1
-local b1,s1=tog("Auto Infiltrate","Spray virus ke zombie terdekat (CD 15s)",lo)
+local b1,s1=tog("Auto Infiltrate","Auto equip saat CD habis & ada target",lo)
 s1(false); b1.MouseButton1Click:Connect(function()
     STATE.autoInfiltrate=not STATE.autoInfiltrate; s1(STATE.autoInfiltrate) end)
 
+lo=lo+1; div(lo)
+lo=lo+1; sec("── COMBAT ──────────────────────────",lo)
 lo=lo+1
-local b2,s2=tog("Auto Shoot","Headshot — prioritas zombie ber-virus",lo)
+local b2,s2=tog("Auto Shoot","Headshot zombie ber-virus saja",lo)
 s2(false); b2.MouseButton1Click:Connect(function()
     STATE.autoShoot=not STATE.autoShoot
     if STATE.autoShoot then shotCounter=1 end; s2(STATE.autoShoot) end)
 
-lo=lo+1
-local b3,s3=tog("Auto Update Targets","Update list target server",lo)
-s3(false); b3.MouseButton1Click:Connect(function()
-    STATE.autoUpdateTarget=not STATE.autoUpdateTarget; s3(STATE.autoUpdateTarget) end)
-
-lo=lo+1; div(lo)
-lo=lo+1; sec("── HEAD EXPANDER ───────────────────",lo)
-
-lo=lo+1
-local b4,s4=tog("Head Expander","Perbesar hitbox kepala zombie",lo)
-s4(false); b4.MouseButton1Click:Connect(function()
-    STATE.headExpander=not STATE.headExpander
-    if not STATE.headExpander then restoreAllHeads() end; s4(STATE.headExpander) end)
-
-lo=lo+1; sld("Head Size (1-20)",1,20,CFG.HEAD_EXP_SIZE,lo,function(v)
-    CFG.HEAD_EXP_SIZE=v; updateHeadSizes() end)
-
 lo=lo+1; div(lo)
 lo=lo+1; sec("── ULTIMATE ────────────────────────",lo)
-
 lo=lo+1
 local overBtn=bigBtn("⚡  SYSTEM OVERRIDE",C.OVR,C.OVR2,lo)
 overBtn.MouseButton1Click:Connect(function()
     local remote=getSystemOverrideRemote()
-    if not remote then statusLbl.Text="⚠ Override tidak ditemukan!"; return end
+    if not remote then return end
     pcall(function() remote:FireServer() end)
     TweenService:Create(overBtn,TweenInfo.new(0.08),{BackgroundColor3=Color3.fromRGB(255,100,100)}):Play()
     task.delay(0.2,function()
         TweenService:Create(overBtn,TweenInfo.new(0.2),{BackgroundColor3=C.OVR}):Play()
     end)
-    statusLbl.Text="✓ System Override!"
 end)
 
 lo=lo+1; div(lo)
 lo=lo+1; sec("── SETTINGS ────────────────────────",lo)
-
 lo=lo+1; sld("Max Range",50,800,CFG.MAX_RANGE,lo,function(v) CFG.MAX_RANGE=v end)
 lo=lo+1; sld("Infiltrate Range",10,200,CFG.INFILTRATE_RANGE,lo,function(v) CFG.INFILTRATE_RANGE=v end)
 lo=lo+1; sld("Shoot Rate (ms)",30,300,math.floor(CFG.SHOOT_RATE*1000),lo,function(v) CFG.SHOOT_RATE=v/1000 end)
 
--- ── STATUS UPDATER ────────────────────────────────────────
-task.spawn(function()
-    while true do
-        task.wait(0.5)
-        local chars=workspace:FindFirstChild("Characters")
-        local nearbyZ,virusZ=0,0
-        local char=lp.Character
-        local hrp=char and char:FindFirstChild("HumanoidRootPart")
-        if chars then
-            for _,z in pairs(chars:GetChildren()) do
-                if isEnemy(z) then
-                    if hrp then
-                        local r=getZombieRoot(z)
-                        if r and (r.Position-hrp.Position).Magnitude<=CFG.MAX_RANGE then
-                            nearbyZ=nearbyZ+1
-                        end
-                    end
-                    if hasVirus(z) then virusZ=virusZ+1 end
-                end
-            end
-        end
-        local w,_=getWeaponShootRemote()
-        local wName=w and w.Name or "—"
-        local cdLeft=INFILTRATE_CD-(tick()-lastInfiltrateUse)
-        local cdStr=cdLeft<=0 and "READY" or string.format("%.1fs",cdLeft)
-        local soOk=getSystemOverrideRemote()~=nil and "✓" or "✗"
-        statusLbl.Text=string.format(
-            "Range:%d  Z:%d  Virus:%d\nWeapon: %s\nInfiltrate:%s  Override:%s",
-            CFG.MAX_RANGE,nearbyZ,virusZ,wName,cdStr,soOk
-        )
+-- ── CD UPDATER realtime ────────────────────────────────────
+RunService.RenderStepped:Connect(function()
+    local cdLeft = INFILTRATE_CD - (tick() - lastInfiltrateUse)
+    if cdLeft <= 0 then
+        cdLbl.Text       = "READY"
+        cdLbl.TextColor3 = C.CD_READY
+        cdFill.Size      = UDim2.new(1,0,1,0)
+        cdFill.BackgroundColor3 = C.CD_READY
+    else
+        cdLbl.Text       = string.format("%.1fs", cdLeft)
+        cdLbl.TextColor3 = C.CD_WAIT
+        local ratio = math.clamp(cdLeft / INFILTRATE_CD, 0, 1)
+        cdFill.Size = UDim2.new(ratio, 0, 1, 0)
+        cdFill.BackgroundColor3 = C.CD_WAIT
     end
 end)
 
