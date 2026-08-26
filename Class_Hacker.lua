@@ -400,86 +400,158 @@ local function getCurrentWeapon()
     return nil
 end
 
+local function getOldTool(name)
+    if not name then return nil end
+    local bp   = lp:FindFirstChild("Backpack")
+    local char = lp.Character
+    if bp   and bp:FindFirstChild(name)   then return bp:FindFirstChild(name) end
+    if char and char:FindFirstChild(name) then return char:FindFirstChild(name) end
+    return nil
+end
+
+local function swapBack(prevWeaponName)
+    if prevWeaponName then
+        local old = getOldTool(prevWeaponName)
+        if old then pcall(function() equipTool(old) end)
+        else        pcall(function() unequipAll()   end) end
+    else
+        pcall(function() unequipAll() end)
+    end
+end
+
 -- ── AUTO INFILTRATE ───────────────────────────────────────
+-- Logika:
+-- 1. Jika CD habis → auto equip Infiltrate ke tangan player
+-- 2. Player pakai manual (klik kiri) → skill jalan
+-- 3. Deteksi via hookfunction pada FireServer Infiltrate.Use
+--    → saat player fire, script otomatis swap kembali ke senjata lama
+-- ─────────────────────────────────────────────────────────
+
+local infiltrateHook    = nil  -- menyimpan hook agar bisa di-unhook
+local prevWeaponNameINF = nil  -- senjata sebelum equip Infiltrate
+local infiltrateEquipped = false
+
+local function unhookInfiltrate()
+    if infiltrateHook then
+        pcall(function() infiltrateHook() end)
+        infiltrateHook = nil
+    end
+end
+
+local function hookInfiltrateUse(remote)
+    -- Hook FireServer pada remote Infiltrate.Use
+    -- Saat player fire (pakai skill), deteksi dan swap balik
+    local originalFireServer = remote.FireServer
+    infiltrateHook = hookfunction(originalFireServer, function(self, ...)
+        -- Panggil original dulu agar skill tetap jalan
+        local result = {originalFireServer(self, ...)}
+        -- Catat waktu penggunaan
+        lastInfiltrateUse = tick()
+        infiltrateRunning = false
+        -- Unhook agar tidak trigger berkali-kali
+        unhookInfiltrate()
+        -- Swap kembali ke senjata lama setelah jeda singkat
+        task.delay(0.5, function()
+            swapBack(prevWeaponNameINF)
+            infiltrateEquipped = false
+        end)
+        return table.unpack(result)
+    end)
+end
+
 RunService.Heartbeat:Connect(function()
-    if not STATE.autoInfiltrate then return end
-    if infiltrateRunning then return end
+    if not STATE.autoInfiltrate then
+        -- Kalau toggle dimatikan, unhook dan swap balik
+        if infiltrateEquipped then
+            unhookInfiltrate()
+            swapBack(prevWeaponNameINF)
+            infiltrateEquipped = false
+        end
+        return
+    end
+
     local now = tick()
     if now - lastInfiltrate < 0.5 then return end
     lastInfiltrate = now
-    if now - lastInfiltrateUse < INFILTRATE_CD then return end
 
-    local target = getBestInfiltrateTarget()
-    if not target then return end
+    -- CD belum habis — pastikan tidak auto equip
+    if now - lastInfiltrateUse < INFILTRATE_CD then
+        -- Kalau Infiltrate masih di tangan dan seharusnya sudah swap balik
+        if infiltrateEquipped and not infiltrateRunning then
+            unhookInfiltrate()
+            swapBack(prevWeaponNameINF)
+            infiltrateEquipped = false
+        end
+        return
+    end
+
+    -- CD habis — cek apakah Infiltrate sudah di tangan
+    local char = lp.Character
+    if not char then return end
+    local alreadyHeld = char:FindFirstChild("Infiltrate") ~= nil
+
+    if alreadyHeld and infiltrateEquipped then return end  -- sudah di tangan, tunggu player pakai
 
     -- Cari tool Infiltrate
     local infiltrateTool = nil
     local bp = lp:FindFirstChild("Backpack")
     if bp then infiltrateTool = bp:FindFirstChild("Infiltrate") end
-    if not infiltrateTool then
-        local char = lp.Character
-        if char then infiltrateTool = char:FindFirstChild("Infiltrate") end
+    if not infiltrateTool and not alreadyHeld then return end
+    if alreadyHeld then
+        local t = char:FindFirstChild("Infiltrate")
+        if t then infiltrateTool = t end
     end
     if not infiltrateTool then return end
 
-    infiltrateRunning = true
-    task.spawn(function()
-        -- Simpan senjata lama
-        local prevWeapon     = getCurrentWeapon()
-        local prevWeaponName = prevWeapon and prevWeapon.Name or nil
+    -- Simpan senjata yang sedang dipegang (kalau bukan Infiltrate sendiri)
+    local current = getCurrentWeapon()
+    if current and current.Name == "Infiltrate" then
+        -- Sudah pegang Infiltrate, setup hook saja jika belum
+        if not infiltrateEquipped then
+            infiltrateEquipped = true
+            local remote = infiltrateTool:FindFirstChild("Use")
+            if remote and not infiltrateHook then
+                hookInfiltrateUse(remote)
+            end
+        end
+        return
+    end
 
+    prevWeaponNameINF = current and current.Name or nil
+    infiltrateEquipped = true
+    infiltrateRunning  = true
+
+    task.spawn(function()
         -- Equip Infiltrate
         pcall(function() equipTool(infiltrateTool) end)
 
-        -- Tunggu tool benar-benar ter-equip
+        -- Tunggu ter-equip lalu pasang hook
         local equippedTool = nil
         for _ = 1, 20 do
             task.wait(0.05)
-            local char = lp.Character
-            if char then
-                local t = char:FindFirstChild("Infiltrate")
+            local c = lp.Character
+            if c then
+                local t = c:FindFirstChild("Infiltrate")
                 if t then equippedTool = t; break end
             end
         end
 
         if equippedTool then
-            -- Validasi ketat sebelum fire:
-            -- 1. Remote Use tersedia di tool yang sudah di-equip
-            -- 2. Target masih hidup, belum virus, valid enemy
             local remote = equippedTool:FindFirstChild("Use")
-            local hum    = target:FindFirstChildOfClass("Humanoid")
-
-            if remote
-            and hum and hum.Health > 0
-            and not hasVirus(target)
-            and isValidEnemy(target) then
-                -- Semua valid — FireServer dengan target yang sudah dikonfirmasi
-                local nilTarget = getNilInst(target.Name, "Model") or target
-                local ok = pcall(function() remote:FireServer(nilTarget) end)
-                if ok then lastInfiltrateUse = tick() end
+            if remote then
+                hookInfiltrateUse(remote)
             end
         end
 
-        -- Tunggu animasi selesai
-        task.wait(0.6)
-
-        -- Kembali ke senjata lama atau unequip
-        if prevWeaponName then
-            local old = nil
-            local char = lp.Character
-            local backpack = lp:FindFirstChild("Backpack")
-            if backpack then old = backpack:FindFirstChild(prevWeaponName) end
-            if not old and char then old = char:FindFirstChild(prevWeaponName) end
-            if old then
-                pcall(function() equipTool(old) end)
-            else
-                pcall(function() unequipAll() end)
+        -- Kalau player tidak pakai dalam 8 detik, swap balik otomatis
+        task.delay(8, function()
+            if infiltrateEquipped then
+                unhookInfiltrate()
+                swapBack(prevWeaponNameINF)
+                infiltrateEquipped = false
+                infiltrateRunning  = false
             end
-        else
-            pcall(function() unequipAll() end)
-        end
-
-        infiltrateRunning = false
+        end)
     end)
 end)
 
